@@ -1,0 +1,264 @@
+// Схема БД. SQLite для разработки; для продакшена меняем provider на postgresql
+// (все типы совместимы, enum-ы намеренно хранятся строками).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  username     String   @unique
+  passwordHash String
+  role         String   @default("USER") // USER | ADMIN
+  balance      Int      @default(0) // в копейках/центах
+  banned       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+
+  // provably fair
+  serverSeed     String
+  serverSeedHash String
+  clientSeed     String
+  nonce          Int    @default(0)
+
+  openings     Opening[]
+  inventory    InventoryItem[]
+  transactions Transaction[]
+  payments     Payment[]
+  seedPairs    SeedPair[]
+  rouletteBets RouletteBet[]
+  coinflips    CoinflipGame[]
+}
+
+// Раскрытые (отработавшие) пары сидов — для проверки честности задним числом.
+model SeedPair {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serverSeed String
+  serverHash String
+  clientSeed String
+  nonceUsed  Int
+  revealedAt DateTime @default(now())
+
+  @@index([userId])
+}
+
+model Item {
+  id        String   @id @default(cuid())
+  name      String // "AK-47 | Redline"
+  weapon    String // "AK-47"
+  skin      String // "Redline"
+  rarity    String // CONSUMER|INDUSTRIAL|MILSPEC|RESTRICTED|CLASSIFIED|COVERT|CONTRABAND
+  wear      String // FN|MW|FT|WW|BS
+  statTrak  Boolean  @default(false)
+  price     Int // в копейках/центах
+  image     String? // URL картинки, опционально
+  createdAt DateTime @default(now())
+
+  caseItems CaseItem[]
+  inventory InventoryItem[]
+  openings  Opening[]
+}
+
+model Case {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  description String?
+  image       String?
+  price       Int
+  active      Boolean  @default(true)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  items     CaseItem[]
+  openings  Opening[]
+}
+
+model CaseItem {
+  id     String @id @default(cuid())
+  caseId String
+  itemId String
+  weight Int    @default(1) // шанс = weight / сумма весов кейса
+
+  case Case @relation(fields: [caseId], references: [id], onDelete: Cascade)
+  item Item @relation(fields: [itemId], references: [id], onDelete: Cascade)
+
+  @@unique([caseId, itemId])
+  @@index([caseId])
+}
+
+model Opening {
+  id     String @id @default(cuid())
+  userId String
+  caseId String
+  itemId String
+
+  cost  Int // сколько списали
+  value Int // цена выпавшего предмета на момент открытия
+
+  // provably fair snapshot
+  serverSeed String
+  serverHash String
+  clientSeed String
+  nonce      Int
+  roll       Int // выпавший тикет [0, 100000)
+  totalTickets Int @default(100000)
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  case Case @relation(fields: [caseId], references: [id])
+  item Item @relation(fields: [itemId], references: [id])
+
+  inventoryItem InventoryItem?
+
+  @@index([userId])
+  @@index([caseId])
+  @@index([createdAt])
+}
+
+model InventoryItem {
+  id        String   @id @default(cuid())
+  userId    String
+  itemId    String
+  openingId String?  @unique
+  status    String   @default("IN_INVENTORY") // IN_INVENTORY | SOLD | WITHDRAWN
+  soldPrice Int?
+  createdAt DateTime @default(now())
+
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  item    Item     @relation(fields: [itemId], references: [id])
+  opening Opening? @relation(fields: [openingId], references: [id])
+
+  @@index([userId, status])
+}
+
+model Transaction {
+  id           String   @id @default(cuid())
+  userId       String
+  type         String // DEPOSIT | CASE_OPEN | ITEM_SELL | ADMIN_ADJUST | WITHDRAW
+  amount       Int // со знаком
+  balanceAfter Int
+  meta         String? // JSON
+  createdAt    DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+model Payment {
+  id         String   @id @default(cuid())
+  userId     String
+  provider   String // mock | stripe
+  providerId String? // id сессии/платежа у провайдера
+  amount     Int
+  currency   String   @default("USD")
+  status     String   @default("PENDING") // PENDING | PAID | FAILED | EXPIRED
+  createdAt  DateTime @default(now())
+  paidAt     DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([providerId])
+}
+
+// ---------------------------------------------------------------- рулетка
+// Колесо против площадки: раунды идут по расписанию независимо от игроков.
+
+model RouletteRound {
+  id     String @id @default(cuid())
+  number Int    @unique // порядковый номер, виден игрокам
+
+  // provably fair: хеш публикуется в начале раунда, сид раскрывается после
+  serverSeed String
+  serverHash String
+
+  phase      String // BETTING | SPINNING | SETTLED
+  totalSlots Int
+  redSlots   Int
+  blackSlots Int
+  greenSlots Int
+
+  // Множители фиксируются на момент создания раунда: смена настроек
+  // в админке не должна менять выплату по уже сделанным ставкам.
+  payoutColor Float @default(2)
+  payoutGreen Float @default(14)
+
+  roll  Int? // выпавший билет
+  slot  Int? // номер сектора
+  color String? // RED | BLACK | GREEN
+
+  startedAt     DateTime  @default(now())
+  bettingEndsAt DateTime
+  settledAt     DateTime?
+
+  bets RouletteBet[]
+
+  @@index([phase])
+  @@index([startedAt])
+}
+
+model RouletteBet {
+  id      String @id @default(cuid())
+  roundId String
+  userId  String
+  color   String // RED | BLACK | GREEN
+  amount  Int
+  payout  Int    @default(0)
+
+  createdAt DateTime @default(now())
+
+  round RouletteRound @relation(fields: [roundId], references: [id], onDelete: Cascade)
+  user  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roundId, userId, color])
+  @@index([roundId])
+  @@index([userId])
+}
+
+// -------------------------------------------------------------- коинфлип
+// Бросок монеты против площадки, результат считается сразу.
+
+model CoinflipGame {
+  id     String @id @default(cuid())
+  userId String
+
+  side       String // выбор игрока: HEADS | TAILS
+  result     String // выпавшая сторона
+  amount     Int
+  win        Boolean
+  payout     Int
+  multiplier Float
+  winChance  Float
+
+  // provably fair — та же пара сидов, что и у кейсов
+  serverSeed   String
+  serverHash   String
+  clientSeed   String
+  nonce        Int
+  roll         Int
+  totalTickets Int
+
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([createdAt])
+}
+
+// Настройки платформы, редактируемые из админки (key/value).
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}

@@ -1,0 +1,19 @@
+node_modules/
+.env
+*.log
+
+# сборка Nuxt
+.nuxt/
+.output/
+.data/
+dist/
+
+# база данных SQLite
+*.db
+*.db-journal
+backend/prisma/dev.db*
+
+# редакторы / ОС
+.DS_Store
+.idea/
+.vscode/
