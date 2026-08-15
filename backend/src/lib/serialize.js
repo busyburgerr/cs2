@@ -6,7 +6,9 @@ export function publicUser(user) {
     email: user.email,
     username: user.username,
     role: user.role,
-    balance: user.balance,
+    // Демо-аккаунт везде работает со своим виртуальным балансом.
+    balance: user.demo ? user.demoBalance : user.balance,
+    demo: user.demo,
     createdAt: user.createdAt,
   }
 }
@@ -72,6 +74,8 @@ export function publicCase(caseRow, { withItems = false } = {}) {
 export function publicOpening(opening) {
   return {
     id: opening.id,
+    demo: opening.demo,
+    forced: opening.forced,
     caseId: opening.caseId,
     case: opening.case ? { slug: opening.case.slug, title: opening.case.title } : undefined,
     item: opening.item ? publicItem(opening.item) : undefined,

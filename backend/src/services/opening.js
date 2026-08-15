@@ -2,6 +2,7 @@ import { prisma } from '../db.js'
 import { AppError, badRequest, notFound } from '../lib/errors.js'
 import { buildTicketRanges, computeRoll, pickByRoll } from '../lib/fair.js'
 import { getSettings } from './settings.js'
+import { balanceField, balanceOf } from '../lib/wallet.js'
 
 /**
  * Открытие кейса. Всё внутри одной транзакции:
@@ -33,29 +34,46 @@ export async function openCase({ userId, slug, count = 1 }) {
     const user = await tx.user.findUnique({ where: { id: userId } })
     if (!user) throw notFound('Пользователь не найден')
     if (user.banned) throw new AppError(403, 'Аккаунт заблокирован')
-    if (user.balance < cost) throw new AppError(402, 'Недостаточно средств на балансе', 'NO_FUNDS')
+
+    const field = balanceField(user)
+    const startBalance = balanceOf(user)
+    if (startBalance < cost) throw new AppError(402, 'Недостаточно средств на балансе', 'NO_FUNDS')
 
     // Оптимистическая блокировка: nonce должен быть тем же, что мы прочитали,
     // иначе параллельный запрос уже израсходовал эти тикеты.
     const locked = await tx.user.updateMany({
-      where: { id: userId, nonce: user.nonce, balance: { gte: cost } },
-      data: { balance: { decrement: cost }, nonce: { increment: count } },
+      where: { id: userId, nonce: user.nonce, [field]: { gte: cost } },
+      data: { [field]: { decrement: cost }, nonce: { increment: count } },
     })
     if (locked.count !== 1) {
       throw new AppError(409, 'Параллельное открытие, повторите попытку', 'CONFLICT')
     }
 
-    let balance = user.balance - cost
+    // Заданный администратором дроп работает только на демо-аккаунте
+    // и только если предмет действительно есть в этом кейсе.
+    const forcedEntry =
+      user.demo && user.demoForceItemId
+        ? ranges.find((r) => r.item.id === user.demoForceItemId)
+        : null
+    let forcedLeft = forcedEntry ? count : 0
+
+    let balance = startBalance - cost
     const results = []
 
     for (let i = 0; i < count; i++) {
       const nonce = user.nonce + i
       const roll = computeRoll(user.serverSeed, user.clientSeed, nonce, totalWeight)
-      const won = pickByRoll(ranges, roll)
+      const rolled = pickByRoll(ranges, roll)
+
+      const forced = forcedLeft > 0
+      const won = forced ? forcedEntry : rolled
+      if (forced) forcedLeft--
 
       const opening = await tx.opening.create({
         data: {
           userId,
+          demo: user.demo,
+          forced,
           caseId: caseRow.id,
           itemId: won.item.id,
           cost: caseRow.price,
@@ -71,20 +89,32 @@ export async function openCase({ userId, slug, count = 1 }) {
       })
 
       const inventoryItem = await tx.inventoryItem.create({
-        data: { userId, itemId: won.item.id, openingId: opening.id },
+        data: { userId, demo: user.demo, itemId: won.item.id, openingId: opening.id },
       })
 
       await tx.transaction.create({
         data: {
           userId,
+          demo: user.demo,
           type: 'CASE_OPEN',
           amount: -caseRow.price,
-          balanceAfter: user.balance - caseRow.price * (i + 1),
-          meta: JSON.stringify({ caseSlug: caseRow.slug, itemId: won.item.id, roll }),
+          balanceAfter: startBalance - caseRow.price * (i + 1),
+          meta: JSON.stringify({ caseSlug: caseRow.slug, itemId: won.item.id, roll, forced }),
         },
       })
 
-      results.push({ opening, inventoryItemId: inventoryItem.id, chance: won.chance, roll })
+      results.push({
+        opening,
+        inventoryItemId: inventoryItem.id,
+        chance: won.chance,
+        roll,
+        forced,
+      })
+    }
+
+    // Подкрутка одноразовая: после использования сбрасываем.
+    if (forcedEntry) {
+      await tx.user.update({ where: { id: userId }, data: { demoForceItemId: null } })
     }
 
     return { openings: results, balance, totalWeight, caseRow }
@@ -110,21 +140,25 @@ export async function sellInventoryItem({ userId, inventoryItemId }) {
     })
     if (updated.count !== 1) throw badRequest('Предмет уже продан')
 
+    // Демо-предмет продаётся в демо-баланс, реальный — в реальный:
+    // виртуальные выигрыши не могут превратиться в настоящие деньги.
+    const field = inv.demo ? 'demoBalance' : 'balance'
     const user = await tx.user.update({
       where: { id: userId },
-      data: { balance: { increment: payout } },
+      data: { [field]: { increment: payout } },
     })
 
     await tx.transaction.create({
       data: {
         userId,
+        demo: inv.demo,
         type: 'ITEM_SELL',
         amount: payout,
-        balanceAfter: user.balance,
+        balanceAfter: user[field],
         meta: JSON.stringify({ itemId: inv.itemId, inventoryItemId: inv.id }),
       },
     })
 
-    return { payout, balance: user.balance }
+    return { payout, balance: user[field] }
   })
 }

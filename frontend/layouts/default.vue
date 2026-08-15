@@ -54,8 +54,14 @@ const nav = computed(() => [
           <template v-if="auth.isLoggedIn">
             <NuxtLink
               to="/wallet"
-              class="group flex items-center gap-2 rounded-xl border border-white/[.08] bg-white/[.04] py-1.5 pl-3 pr-1.5 transition hover:border-accent-500/40"
+              class="group flex items-center gap-2 rounded-xl border py-1.5 pl-3 pr-1.5 transition"
+              :class="
+                auth.user?.demo
+                  ? 'border-amber-400/40 bg-amber-500/10 hover:border-amber-400/70'
+                  : 'border-white/[.08] bg-white/[.04] hover:border-accent-500/40'
+              "
             >
+              <span v-if="auth.user?.demo" class="text-[10px] font-black text-amber-300">ДЕМО</span>
               <span class="money text-sm">{{ money(auth.balance) }}</span>
               <span
                 class="grid h-6 w-6 place-items-center rounded-lg text-sm font-black text-ink-950 transition group-hover:scale-105"
@@ -117,6 +123,8 @@ const nav = computed(() => [
         </NuxtLink>
       </nav>
     </header>
+
+    <DemoBanner />
 
     <main class="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
       <slot />

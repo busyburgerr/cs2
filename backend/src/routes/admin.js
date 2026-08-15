@@ -88,7 +88,12 @@ adminRouter.get(
       coinflipAgg,
     ] = await Promise.all([
         prisma.user.count(),
-        prisma.opening.aggregate({ _sum: { cost: true, value: true }, _count: true }),
+        // Демо-игры в деньгах не участвуют и в статистику не попадают.
+        prisma.opening.aggregate({
+          where: { demo: false },
+          _sum: { cost: true, value: true },
+          _count: true,
+        }),
         prisma.payment.aggregate({ where: { status: 'PAID' }, _sum: { amount: true }, _count: true }),
         prisma.case.count(),
         prisma.item.count(),
@@ -98,11 +103,19 @@ adminRouter.get(
           include: { item: true, case: true, user: true },
         }),
         prisma.opening.findMany({
-          where: { createdAt: { gte: since } },
+          where: { createdAt: { gte: since }, demo: false },
           select: { cost: true, value: true, createdAt: true },
         }),
-        prisma.rouletteBet.aggregate({ _sum: { amount: true, payout: true }, _count: true }),
-        prisma.coinflipGame.aggregate({ _sum: { amount: true, payout: true }, _count: true }),
+        prisma.rouletteBet.aggregate({
+          where: { demo: false },
+          _sum: { amount: true, payout: true },
+          _count: true,
+        }),
+        prisma.coinflipGame.aggregate({
+          where: { demo: false },
+          _sum: { amount: true, payout: true },
+          _count: true,
+        }),
       ])
 
     const wagered = openingsAgg._sum.cost ?? 0
@@ -372,7 +385,11 @@ adminRouter.get(
     res.json({
       users: users.map((u) => ({
         ...publicUser(u),
+        balance: u.balance,
         banned: u.banned,
+        demoBalance: u.demoBalance,
+        demoForceItemId: u.demoForceItemId,
+        demoForceCoinflip: u.demoForceCoinflip,
         openingsCount: u._count.openings,
       })),
     })
@@ -394,6 +411,65 @@ adminRouter.patch(
   }),
 )
 
+/**
+ * Демо-режим аккаунта: виртуальный баланс и заданный исход следующей игры.
+ * Нужен для записи промо-роликов. Подкрутка возможна только здесь —
+ * на аккаунтах с реальными деньгами таких полей нет вообще.
+ */
+adminRouter.put(
+  '/users/:id/demo',
+  ah(async (req, res) => {
+    const data = parse(
+      z.object({
+        demo: z.boolean().optional(),
+        demoBalance: z.number().int().min(0).max(1_000_000_00).optional(),
+        demoForceItemId: z.string().nullish(),
+        demoForceCoinflip: z.enum(['WIN', 'LOSE']).nullish(),
+      }),
+      req.body,
+    )
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } })
+    if (!target) throw notFound('Пользователь не найден')
+
+    const willBeDemo = data.demo ?? target.demo
+    const forcing = data.demoForceItemId || data.demoForceCoinflip
+    if (forcing && !willBeDemo) {
+      throw badRequest('Задать исход игры можно только демо-аккаунту')
+    }
+    if (willBeDemo && target.balance > 0 && data.demo === true) {
+      throw badRequest(
+        'На аккаунте есть реальные деньги. Сначала обнулите баланс, иначе демо-режим смешает реальные и виртуальные средства.',
+      )
+    }
+    if (data.demoForceItemId) {
+      const item = await prisma.item.findUnique({ where: { id: data.demoForceItemId } })
+      if (!item) throw badRequest('Предмет не найден')
+    }
+
+    const user = await prisma.user.update({
+      where: { id: target.id },
+      data: {
+        ...(data.demo !== undefined ? { demo: data.demo } : {}),
+        ...(data.demoBalance !== undefined ? { demoBalance: data.demoBalance } : {}),
+        ...(data.demoForceItemId !== undefined ? { demoForceItemId: data.demoForceItemId } : {}),
+        ...(data.demoForceCoinflip !== undefined
+          ? { demoForceCoinflip: data.demoForceCoinflip }
+          : {}),
+      },
+    })
+
+    res.json({
+      user: {
+        ...publicUser(user),
+        demoBalance: user.demoBalance,
+        demoForceItemId: user.demoForceItemId,
+        demoForceCoinflip: user.demoForceCoinflip,
+      },
+    })
+  }),
+)
+
 adminRouter.post(
   '/users/:id/balance',
   ah(async (req, res) => {
@@ -406,18 +482,22 @@ adminRouter.post(
     const result = await prisma.$transaction(async (tx) => {
       const target = await tx.user.findUnique({ where: { id: req.params.id } })
       if (!target) throw notFound('Пользователь не найден')
-      if (target.balance + amount < 0) throw badRequest('Баланс не может уйти в минус')
+
+      // Демо-аккаунту корректируем виртуальный баланс.
+      const field = target.demo ? 'demoBalance' : 'balance'
+      if (target[field] + amount < 0) throw badRequest('Баланс не может уйти в минус')
 
       const user = await tx.user.update({
         where: { id: target.id },
-        data: { balance: { increment: amount } },
+        data: { [field]: { increment: amount } },
       })
       await tx.transaction.create({
         data: {
           userId: user.id,
+          demo: target.demo,
           type: 'ADMIN_ADJUST',
           amount,
-          balanceAfter: user.balance,
+          balanceAfter: user[field],
           meta: JSON.stringify({ by: req.user.username, note: note || null }),
         },
       })

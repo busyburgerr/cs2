@@ -2,6 +2,7 @@ import { prisma } from '../db.js'
 import { AppError, badRequest } from '../lib/errors.js'
 import { computeRoll } from '../lib/fair.js'
 import { getSettings } from './settings.js'
+import { balanceField, balanceOf } from '../lib/wallet.js'
 
 /**
  * Коинфлип против площадки.
@@ -35,48 +36,60 @@ export async function flip({ userId, side, amount }) {
   return prisma.$transaction(async (tx) => {
     const user = await tx.user.findUnique({ where: { id: userId } })
     if (!user) throw badRequest('Пользователь не найден')
-    if (user.balance < amount) throw new AppError(402, 'Недостаточно средств', 'NO_FUNDS')
+
+    const field = balanceField(user)
+    const startBalance = balanceOf(user)
+    if (startBalance < amount) throw new AppError(402, 'Недостаточно средств', 'NO_FUNDS')
 
     // Тот же оптимистичный замок по nonce, что и при открытии кейса:
     // параллельные броски не могут использовать один и тот же билет.
     const locked = await tx.user.updateMany({
-      where: { id: userId, nonce: user.nonce, balance: { gte: amount } },
-      data: { balance: { decrement: amount }, nonce: { increment: 1 } },
+      where: { id: userId, nonce: user.nonce, [field]: { gte: amount } },
+      data: { [field]: { decrement: amount }, nonce: { increment: 1 } },
     })
     if (locked.count !== 1) {
       throw new AppError(409, 'Параллельная ставка, повторите попытку', 'CONFLICT')
     }
 
     const roll = computeRoll(user.serverSeed, user.clientSeed, user.nonce, TICKETS)
-    const win = roll < winTickets
+
+    // Заданный администратором исход — только на демо-аккаунте, одноразовый.
+    const forced = Boolean(user.demo && user.demoForceCoinflip)
+    const win = forced ? user.demoForceCoinflip === 'WIN' : roll < winTickets
     const payout = win ? Math.round(amount * multiplier) : 0
     const result = win ? side : SIDES.find((s) => s !== side)
 
-    let balance = user.balance - amount
+    if (forced) {
+      await tx.user.update({ where: { id: userId }, data: { demoForceCoinflip: null } })
+    }
+
+    let balance = startBalance - amount
 
     await tx.transaction.create({
       data: {
         userId,
+        demo: user.demo,
         type: 'COINFLIP_BET',
         amount: -amount,
         balanceAfter: balance,
-        meta: JSON.stringify({ side, roll }),
+        meta: JSON.stringify({ side, roll, forced }),
       },
     })
 
     if (payout > 0) {
       const updated = await tx.user.update({
         where: { id: userId },
-        data: { balance: { increment: payout } },
+        data: { [field]: { increment: payout } },
       })
-      balance = updated.balance
+      balance = updated[field]
       await tx.transaction.create({
         data: {
           userId,
+          demo: user.demo,
           type: 'COINFLIP_WIN',
           amount: payout,
           balanceAfter: balance,
-          meta: JSON.stringify({ side, roll, multiplier }),
+          meta: JSON.stringify({ side, roll, multiplier, forced }),
         },
       })
     }
@@ -84,6 +97,8 @@ export async function flip({ userId, side, amount }) {
     const game = await tx.coinflipGame.create({
       data: {
         userId,
+        demo: user.demo,
+        forced,
         side,
         result,
         amount,
@@ -106,7 +121,8 @@ export async function flip({ userId, side, amount }) {
 
 export async function history({ userId, limit = 20 }) {
   return prisma.coinflipGame.findMany({
-    where: userId ? { userId } : undefined,
+    // Публичная лента (без userId) не показывает демо-игры.
+    where: userId ? { userId } : { demo: false },
     orderBy: { createdAt: 'desc' },
     take: limit,
     include: userId ? undefined : { user: { select: { username: true } } },

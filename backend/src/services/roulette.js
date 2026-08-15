@@ -2,6 +2,7 @@ import { prisma } from '../db.js'
 import { AppError, badRequest, notFound } from '../lib/errors.js'
 import { computeRoll, generateServerSeed, hashServerSeed } from '../lib/fair.js'
 import { getSettings } from './settings.js'
+import { balanceField } from '../lib/wallet.js'
 
 /**
  * Рулетка: колесо против площадки.
@@ -97,16 +98,19 @@ async function settleRound(round) {
       const payout = Math.round(bet.amount * multiplier)
       await tx.rouletteBet.update({ where: { id: bet.id }, data: { payout } })
 
+      // Выплата уходит в тот же баланс, из которого была ставка.
+      const field = bet.demo ? 'demoBalance' : 'balance'
       const user = await tx.user.update({
         where: { id: bet.userId },
-        data: { balance: { increment: payout } },
+        data: { [field]: { increment: payout } },
       })
       await tx.transaction.create({
         data: {
           userId: bet.userId,
+          demo: bet.demo,
           type: 'ROULETTE_WIN',
           amount: payout,
-          balanceAfter: user.balance,
+          balanceAfter: user[field],
           meta: JSON.stringify({ roundId: fresh.id, round: fresh.number, color: fresh.color }),
         },
       })
@@ -188,6 +192,11 @@ export async function getCurrentState(userId = null) {
   let myBets = { RED: 0, BLACK: 0, GREEN: 0 }
 
   for (const bet of round?.bets ?? []) {
+    // Свою ставку демо-игрок видит, но в публичный список и суммы
+    // раунда демо-ставки не попадают.
+    if (bet.userId === userId) myBets[bet.color] += bet.amount
+    if (bet.demo) continue
+
     totals[bet.color] += bet.amount
     bets.push({
       id: bet.id,
@@ -196,7 +205,6 @@ export async function getCurrentState(userId = null) {
       username: bet.user.username,
       mine: bet.userId === userId,
     })
-    if (bet.userId === userId) myBets[bet.color] += bet.amount
   }
 
   const spinEndsAt = round
@@ -267,9 +275,13 @@ export async function placeBet({ userId, color, amount }) {
       throw badRequest(`Максимальная ставка на цвет — ${settings['roulette.maxBet'] / 100}`)
     }
 
+    const before = await tx.user.findUnique({ where: { id: userId } })
+    if (!before) throw notFound('Пользователь не найден')
+    const field = balanceField(before)
+
     const debited = await tx.user.updateMany({
-      where: { id: userId, balance: { gte: amount } },
-      data: { balance: { decrement: amount } },
+      where: { id: userId, [field]: { gte: amount } },
+      data: { [field]: { decrement: amount } },
     })
     if (debited.count !== 1) throw new AppError(402, 'Недостаточно средств', 'NO_FUNDS')
 
@@ -278,19 +290,22 @@ export async function placeBet({ userId, color, amount }) {
           where: { id: existing.id },
           data: { amount: totalOnColor },
         })
-      : await tx.rouletteBet.create({ data: { roundId: round.id, userId, color, amount } })
+      : await tx.rouletteBet.create({
+          data: { roundId: round.id, userId, color, amount, demo: before.demo },
+        })
 
     const user = await tx.user.findUnique({ where: { id: userId } })
     await tx.transaction.create({
       data: {
         userId,
+        demo: before.demo,
         type: 'ROULETTE_BET',
         amount: -amount,
-        balanceAfter: user.balance,
+        balanceAfter: user[field],
         meta: JSON.stringify({ roundId: round.id, round: round.number, color }),
       },
     })
 
-    return { bet, balance: user.balance, round: { id: round.id, number: round.number } }
+    return { bet, balance: user[field], round: { id: round.id, number: round.number } }
   })
 }

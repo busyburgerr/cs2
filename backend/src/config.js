@@ -38,6 +38,13 @@ export const config = {
     stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET || '',
   },
 
+  mail: {
+    // console — письма печатаются в лог (dev). Для production реализуйте smtp.
+    provider: process.env.MAIL_PROVIDER || 'console',
+    from: process.env.MAIL_FROM || 'no-reply@cs2cases.local',
+    resetTtlMinutes: int(process.env.RESET_TTL_MINUTES, 30),
+  },
+
   // Доля цены предмета, которую пользователь получает при продаже назад площадке.
   sellRate: Number.parseFloat(process.env.SELL_RATE || '0.9'),
 

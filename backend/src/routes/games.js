@@ -100,6 +100,8 @@ coinflipRouter.post(
       balance,
       game: {
         id: game.id,
+        demo: game.demo,
+        forced: game.forced,
         side: game.side,
         result: game.result,
         amount: game.amount,

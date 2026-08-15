@@ -26,13 +26,23 @@ model User {
   clientSeed     String
   nonce          Int    @default(0)
 
+  // --- Демо-режим (для записи промо-роликов) ---
+  // Демо-аккаунт играет на виртуальном балансе: пополнение и вывод запрещены,
+  // все игры помечаются demo и не попадают в публичные ленты и статистику.
+  // Подкрутка результата возможна ТОЛЬКО здесь.
+  demo             Boolean @default(false)
+  demoBalance      Int     @default(0)
+  demoForceItemId  String? // следующий дроп из кейса, если предмет есть в кейсе
+  demoForceCoinflip String? // WIN | LOSE — исход следующего броска монеты
+
   openings     Opening[]
   inventory    InventoryItem[]
   transactions Transaction[]
   payments     Payment[]
-  seedPairs    SeedPair[]
-  rouletteBets RouletteBet[]
-  coinflips    CoinflipGame[]
+  seedPairs      SeedPair[]
+  rouletteBets   RouletteBet[]
+  coinflips      CoinflipGame[]
+  passwordResets PasswordReset[]
 }
 
 // Раскрытые (отработавшие) пары сидов — для проверки честности задним числом.
@@ -95,7 +105,9 @@ model CaseItem {
 }
 
 model Opening {
-  id     String @id @default(cuid())
+  id     String  @id @default(cuid())
+  demo   Boolean @default(false) // открытие на демо-аккаунте
+  forced Boolean @default(false) // результат задан администратором (только демо)
   userId String
   caseId String
   itemId String
@@ -126,6 +138,7 @@ model Opening {
 
 model InventoryItem {
   id        String   @id @default(cuid())
+  demo      Boolean  @default(false)
   userId    String
   itemId    String
   openingId String?  @unique
@@ -142,6 +155,7 @@ model InventoryItem {
 
 model Transaction {
   id           String   @id @default(cuid())
+  demo         Boolean  @default(false)
   userId       String
   type         String // DEPOSIT | CASE_OPEN | ITEM_SELL | ADMIN_ADJUST | WITHDRAW
   amount       Int // со знаком
@@ -208,7 +222,8 @@ model RouletteRound {
 }
 
 model RouletteBet {
-  id      String @id @default(cuid())
+  id      String  @id @default(cuid())
+  demo    Boolean @default(false)
   roundId String
   userId  String
   color   String // RED | BLACK | GREEN
@@ -229,7 +244,9 @@ model RouletteBet {
 // Бросок монеты против площадки, результат считается сразу.
 
 model CoinflipGame {
-  id     String @id @default(cuid())
+  id     String  @id @default(cuid())
+  demo   Boolean @default(false)
+  forced Boolean @default(false) // исход задан администратором (только демо)
   userId String
 
   side       String // выбор игрока: HEADS | TAILS
@@ -254,6 +271,20 @@ model CoinflipGame {
 
   @@index([userId, createdAt])
   @@index([createdAt])
+}
+
+// Одноразовые токены восстановления пароля.
+model PasswordReset {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique // в базе только хеш — сам токен уходит игроку
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
 }
 
 // Настройки платформы, редактируемые из админки (key/value).

@@ -32,6 +32,9 @@ async function getStripe() {
 }
 
 export async function createDeposit({ user, amount }) {
+  if (user.demo) {
+    throw badRequest('Демо-аккаунт не может пополнять баланс реальными деньгами')
+  }
   const settings = await getSettings()
   const { provider } = config.payments
   const minDeposit = settings['wallet.minDeposit']

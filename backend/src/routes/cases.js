@@ -76,6 +76,7 @@ feedRouter.get(
     const take = Math.min(Number.parseInt(req.query.limit, 10) || 20, 50)
     const openings = await prisma.opening.findMany({
       take,
+      where: { demo: false }, // демо-открытия не показываем публично
       orderBy: { createdAt: 'desc' },
       include: { item: true, case: true, user: true },
     })
