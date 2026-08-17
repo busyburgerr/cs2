@@ -32,7 +32,12 @@ async function submit() {
           <input id="email" v-model="form.email" class="input" type="email" autocomplete="email" required />
         </div>
         <div>
-          <label class="label" for="password">Пароль</label>
+          <div class="flex items-baseline justify-between">
+            <label class="label" for="password">Пароль</label>
+            <NuxtLink to="/forgot-password" class="mb-1.5 text-xs text-slate-500 hover:text-accent-400">
+              Забыли пароль?
+            </NuxtLink>
+          </div>
           <input
             id="password"
             v-model="form.password"

@@ -77,6 +77,9 @@ const nav = computed(() => [
                 <span class="text-[10px] text-slate-500">▼</span>
               </button>
               <div v-if="menuOpen" class="card absolute right-0 z-50 mt-2 w-56 overflow-hidden p-1.5">
+                <NuxtLink to="/profile" class="block rounded-lg px-3 py-2 text-sm hover:bg-white/[.06]">
+                  Профиль
+                </NuxtLink>
                 <NuxtLink to="/inventory" class="block rounded-lg px-3 py-2 text-sm hover:bg-white/[.06]">
                   Инвентарь
                 </NuxtLink>

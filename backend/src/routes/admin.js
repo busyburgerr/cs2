@@ -462,6 +462,9 @@ adminRouter.put(
     res.json({
       user: {
         ...publicUser(user),
+        // В админке всегда показываем оба баланса раздельно:
+        // publicUser отдаёт в balance демо-баланс для демо-аккаунтов.
+        balance: user.balance,
         demoBalance: user.demoBalance,
         demoForceItemId: user.demoForceItemId,
         demoForceCoinflip: user.demoForceCoinflip,
